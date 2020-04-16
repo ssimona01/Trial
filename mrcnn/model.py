@@ -955,7 +955,7 @@ def fpn_classifier_graph(rois, feature_maps, image_meta,
 
 
 def build_fpn_mask_graph(rois, feature_maps, image_meta,
-                         pool_size, num_classes, train_bn=True):
+                         pool_size, num_classes, train_bn=True, mask_shape=(28,28)):
     """Builds the computation graph of the mask head of Feature Pyramid Network.
 
     rois: [batch, num_rois, (y1, x1, y2, x2)] Proposal boxes in normalized
@@ -1003,6 +1003,21 @@ def build_fpn_mask_graph(rois, feature_maps, image_meta,
                            name="mrcnn_mask_deconv")(x)
     x = KL.TimeDistributed(KL.Conv2D(num_classes, (1, 1), strides=1, activation="sigmoid"),
                            name="mrcnn_mask")(x)
+    x = KL.Activation('relu')(x)
+    
+    if mask_shape[0] > 28:
+        if mask_shape[0] % 28 != 0:
+            raise ValueError('Mask Size should be a multiple of 28x28.')
+
+        repetitions = int(np.log(mask_shape[0]//28)/np.log(2))
+
+        for i in range(repetitions):
+            x = KL.TimeDistributed(KL.Conv2DTranspose(256, (2, 2), strides=2, activation="relu"),
+                           name="mrcnn_mask_deconv_{0}".format(i))(x)
+            x = KL.TimeDistributed(KL.Conv2D(num_classes, (1, 1), strides=1, activation="sigmoid"),
+                                name="mrcnn_mask_deconv_conv_{0}".format(i))(x)
+            if i != repetitions-1:
+                x = KL.Activation('relu')(x)
     return x
 
 
@@ -2002,7 +2017,8 @@ class MaskRCNN():
                                               input_image_meta,
                                               config.MASK_POOL_SIZE,
                                               config.NUM_CLASSES,
-                                              train_bn=config.TRAIN_BN)
+                                              train_bn=config.TRAIN_BN,
+                                              mask_shape=config.MASK_SHAPE)
 
             # TODO: clean up (use tf.identify if necessary)
             output_rois = KL.Lambda(lambda x: x * 1, name="output_rois")(rois)
@@ -2050,7 +2066,8 @@ class MaskRCNN():
                                               input_image_meta,
                                               config.MASK_POOL_SIZE,
                                               config.NUM_CLASSES,
-                                              train_bn=config.TRAIN_BN)
+                                              train_bn=config.TRAIN_BN,
+                                              mask_shape=config.MASK_SHAPE)
 
             model = KM.Model([input_image, input_image_meta, input_anchors],
                              [detections, mrcnn_class, mrcnn_bbox,
