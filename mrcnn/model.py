@@ -1851,14 +1851,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             # Get GT bounding boxes and masks for image.
             image_id = image_ids[image_index]
 
-            # If the image source is not to be augmented pass None as augmentation
-            if dataset.image_info[image_id]['source'] in no_augmentation_sources:
-                image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
-                load_image_gt(dataset, config, image_id, augment=augment,
-                              augmentation=None,
-                              use_mini_mask=config.USE_MINI_MASK)
-            else:
-                image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
+            image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
                     load_image_gt(dataset, config, image_id, augment=augment,
                                 augmentation=augmentation,
                                 use_mini_mask=config.USE_MINI_MASK)
@@ -2573,7 +2566,7 @@ class MaskRCNN():
             validation_steps=self.config.VALIDATION_STEPS,
             max_queue_size=100,
             workers=1,
-            use_multiprocessing=False,
+            use_multiprocessing=False
         )
         self.epoch = max(self.epoch, epochs)
 
