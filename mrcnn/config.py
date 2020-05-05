@@ -5,9 +5,14 @@ Base Configurations class.
 Copyright (c) 2017 Matterport, Inc.
 Licensed under the MIT License (see LICENSE for details)
 Written by Waleed Abdulla
+
+Modifications
+Copyright (c) 2018/2019 Roland S. Zimmermann, Julien Siems
+Licensed under the MIT License (see LICENSE for details)
 """
 
 import numpy as np
+import math
 
 
 # Base Configuration Class
@@ -212,6 +217,13 @@ class Config(object):
 
     # Optimizer to use. Choose between SGD and ADAM
     OPTIMIZER = 'SGD'
+
+    RUN_NAME = None
+    EDGE_LOSS_SMOOTHING = False
+    EDGE_LOSS_FILTERS = []
+    EDGE_LOSS_NORM = "l2"
+    EDGE_LOSS_WEIGHT_FACTOR = 1.0
+    EDGE_LOSS_WEIGHT_ENTROPY = False
 
     def __init__(self):
         """Set values of computed attributes."""

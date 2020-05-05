@@ -5,6 +5,10 @@ The main Mask R-CNN model implementation.
 Copyright (c) 2017 Matterport, Inc.
 Licensed under the MIT License (see LICENSE for details)
 Written by Waleed Abdulla
+
+Modifications
+Copyright (c) 2018/2019 Roland S. Zimmermann, Julien Siems
+Licensed under the MIT License (see LICENSE for details)
 """
 
 import os
@@ -22,6 +26,7 @@ import keras.backend as K
 import keras.layers as KL
 import keras.engine as KE
 import keras.models as KM
+import skimage.transform
 
 from mrcnn import utils
 
@@ -443,8 +448,7 @@ class PyramidROIAlign(KE.Layer):
         pooled = tf.gather(pooled, ix)
 
         # Re-add the batch dimension
-        shape = tf.concat([tf.shape(boxes)[:2], tf.shape(pooled)[1:]], axis=0)
-        pooled = tf.reshape(pooled, shape)
+        pooled = tf.expand_dims(pooled, 0)
         return pooled
 
     def compute_output_shape(self, input_shape):
@@ -527,6 +531,7 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     crowd_ix = tf.where(gt_class_ids < 0)[:, 0]
     non_crowd_ix = tf.where(gt_class_ids > 0)[:, 0]
     crowd_boxes = tf.gather(gt_boxes, crowd_ix)
+    crowd_masks = tf.gather(gt_masks, crowd_ix, axis=2)
     gt_class_ids = tf.gather(gt_class_ids, non_crowd_ix)
     gt_boxes = tf.gather(gt_boxes, non_crowd_ix)
     gt_masks = tf.gather(gt_masks, non_crowd_ix, axis=2)
@@ -1190,7 +1195,145 @@ def mrcnn_mask_loss_graph(target_masks, target_class_ids, pred_masks):
                     K.binary_crossentropy(target=y_true, output=y_pred),
                     tf.constant(0.0))
     loss = K.mean(loss)
-    return loss
+    return [loss, y_true, y_pred]
+
+
+def mrcnn_mask_edge_loss_graph(y_pred, y_true, edge_filters, smoothing_predictions, smoothing_gt, norm, weight_entropy, weight_factor):
+    """
+    Extra loss to enforce the edges which are present in the groundtruth mask
+    :param y_pred: Predicted mask shape [rois, width, height], with values from 0 to 1
+    :param y_true: Groundtruth mask shape [rois, width, height], with values from 0 to 1
+    :param edge_filters: List of edge detectors to use
+    :param smoothing_predictions: Use a Gaussian smoothing on the predictions before calculating the edges
+    :param smoothing_gt: Use a Gaussian smoothing on the groundtruth before calculating the edges
+    :param norm: Type of the norm to calculate the Edge Loss. Supported values: lp for p in [1..5]
+    :param softmax_entropy_weight: Use the edge loss to weight an additional cross entropy
+            loss instead of using it as a L^p norm
+    :return: loss
+    """
+    # sobel kernels
+    sobel_x_kernel = tf.reshape(tf.constant([[1, 2, 1],
+                                             [0, 0, 0],
+                                             [-1, -2, -1]], dtype=tf.float32),
+                                shape=[3, 3, 1, 1], name='sobel_x_kernel')
+    sobel_y_kernel = tf.reshape(tf.constant([[1, 0, -1],
+                                             [2, 0, -2],
+                                             [1, 0, -1]], dtype=tf.float32),
+                                shape=[3, 3, 1, 1], name='sobel_y_kernel')
+
+    # prewitt kernels
+    prewitt_x_kernel = tf.reshape(tf.constant([[1, 0, -1],
+                                             [1, 0, -1],
+                                             [1, 0, -1]], dtype=tf.float32),
+                                shape=[3, 3, 1, 1], name='prewitt_x_kernel')
+    prewitt_y_kernel = tf.reshape(tf.constant([[1, 1, 1],
+                                             [0, 0, 0],
+                                             [-1, -1, -1]], dtype=tf.float32),
+                                shape=[3, 3, 1, 1], name='prewitt_y_kernel')
+
+    # prewitt kernels
+    kayyali_senw_kernel = tf.reshape(tf.constant([[6, 0, -6],
+                                             [0, 0, -0],
+                                             [-6, 0, 6]], dtype=tf.float32),
+                                shape=[3, 3, 1, 1], name='kayyali_senw_kernel')
+    kayyali_nesw_kernel = tf.reshape(tf.constant([[-6, 0, 6],
+                                             [0, 0, 0],
+                                             [6, 0, -6]], dtype=tf.float32),
+                                shape=[3, 3, 1, 1], name='kayyali_nesw_kernel')
+
+    # roberts kernels
+    roberts_x_kernel = tf.reshape(tf.constant([[1, 0],
+                                              [0, -1]], dtype=tf.float32),
+                                shape=[2, 2, 1, 1], name='roberts_x_kernel')
+    roberts_y_kernel = tf.reshape(tf.constant([[0, -1],
+                                               [1, 0]], dtype=tf.float32),
+                                shape=[2, 2, 1, 1], name='roberts_y_kernel')
+
+    # laplace kernel
+    laplacian_kernel = tf.reshape(tf.constant([[1, 1, 1],
+                                               [1, -8, 1],
+                                               [1, 1, 1]], dtype=tf.float32),
+                                  shape=[3, 3, 1, 1], name='laplacian_kernel')
+
+    gaussian_kernel = tf.reshape(tf.constant([[0.077847, 0.123317, 0.077847],
+                                              [0.123317, 0.195346, 0.1233179],
+                                              [0.077847, 0.123317, 0.077847]], dtype=tf.float32),
+                                 shape=[3, 3, 1, 1], name='gaussian_kernel')
+
+    filter_map = {
+        "sobel-x": sobel_x_kernel,
+        "sobel-y": sobel_y_kernel,
+        "roberts-x": roberts_x_kernel,
+        "roberts-y": roberts_y_kernel,
+        "prewitt-x": prewitt_x_kernel,
+        "prewitt-y": prewitt_y_kernel,
+        "kayyali-senw": kayyali_senw_kernel,
+        "kayyali-nesw": kayyali_nesw_kernel,        
+        "laplace": laplacian_kernel
+    }
+
+    lp_norm_map = {
+        "l1": 1,
+        "l2": 2,
+        "l3": 3,
+        "l4": 4,
+        "l5": 5
+    }
+
+    if norm not in lp_norm_map:
+        raise ValueError("The `norm` '{0}' is not supported. Supported values are: [l1...l5]".format(norm))
+
+    edge_filters = tf.concat([filter_map[x] for x in edge_filters], axis=-1)
+
+    # Add one channel to masks
+    y_pred = tf.expand_dims(y_pred, -1, name='y_pred')
+    y_true = tf.expand_dims(y_true, -1, name='y_true')
+
+    if smoothing_predictions:
+        # First filter with gaussian to smooth edges of predictions
+        y_pred = tf.nn.conv2d(input=y_pred, filter=gaussian_kernel, strides=[1, 1, 1, 1], padding='SAME')
+
+    y_pred_edges = tf.nn.conv2d(input=y_pred, filter=edge_filters, strides=[1, 1, 1, 1], padding='SAME')
+
+    if smoothing_gt:
+        # First filter with gaussian to smooth edges of groundtruth
+        y_true = tf.nn.conv2d(input=y_true, filter=gaussian_kernel, strides=[1, 1, 1, 1], padding='SAME')
+    y_true_edges = tf.nn.conv2d(input=y_true, filter=edge_filters, strides=[1, 1, 1, 1], padding='SAME')
+
+    def append_magnitude(edges, name=None):
+        magnitude = tf.expand_dims(tf.sqrt(edges[:, :, :, 0] ** 2 + edges[:, :, :, 1] ** 2), axis=-1)
+        return tf.concat([edges, magnitude], axis=-1, name=name)
+
+    def lp_loss(y_true, y_pred, p):
+        return K.mean(K.pow(K.abs(y_pred - y_true), p), axis=-1)
+
+    def smoothness_loss(y_true, y_pred, p):
+        weight_smoothness = K.exp(-K.abs(y_true))
+        smoothness = y_pred * weight_smoothness
+        smoothness = smoothness[:, :, :, 0] + smoothness[:, :, :, 1]
+        return K.mean(K.pow(K.abs(smoothness), p))
+
+    # calculate the edge agreement loss per pixel
+    pixel_wise_edge_loss = K.switch(tf.size(y_true_edges) > 0,
+                                    lp_loss(y_true=y_true_edges, y_pred=y_pred_edges, p=lp_norm_map[norm]),
+                                    tf.constant(0.0))
+
+    # multiply the pixelwise edge agreement loss with a scalar factor
+    pixel_wise_edge_loss = weight_factor * pixel_wise_edge_loss
+
+    if weight_entropy:
+        pixel_wise_cross_entropy_loss = K.switch(tf.size(y_true) > 0,
+                                                 K.binary_crossentropy(target=y_true, output=y_pred),
+                                                 tf.constant(0.0))
+
+        weighted_cross_entropy_loss = tf.squeeze(pixel_wise_cross_entropy_loss) * tf.exp(pixel_wise_edge_loss / 16)
+        weighted_cross_entropy_loss = K.mean(weighted_cross_entropy_loss) / 1
+
+        return weighted_cross_entropy_loss
+    else:
+        # return the mean of the pixelwise edge agreement loss
+        edge_loss = K.mean(pixel_wise_edge_loss)
+        return edge_loss
 
 
 ############################################################
@@ -1443,14 +1586,15 @@ def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
             gt_h = gt_y2 - gt_y1
             # Resize mini mask to size of GT box
             placeholder[gt_y1:gt_y2, gt_x1:gt_x2] = \
-                np.round(utils.resize(class_mask, (gt_h, gt_w))).astype(bool)
+                np.round(skimage.transform.resize(
+                    class_mask, (gt_h, gt_w), order=1, mode="constant")).astype(bool)
             # Place the mini batch in the placeholder
             class_mask = placeholder
 
         # Pick part of the mask and resize it
         y1, x1, y2, x2 = rois[i].astype(np.int32)
         m = class_mask[y1:y2, x1:x2]
-        mask = utils.resize(m, config.MASK_SHAPE)
+        mask = skimage.transform.resize(m, config.MASK_SHAPE, order=1, mode="constant")
         masks[i, :, :, class_id] = mask
 
     return rois, roi_gt_class_ids, bboxes, masks
@@ -1510,7 +1654,7 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
     rpn_match[(anchor_iou_max < 0.3) & (no_crowd_bool)] = -1
     # 2. Set an anchor for each GT box (regardless of IoU value).
     # If multiple anchors have the same IoU match all of them
-    gt_iou_argmax = np.argwhere(overlaps == np.max(overlaps, axis=0))[:,0]
+    gt_iou_argmax = np.argmax(overlaps, axis=0)
     rpn_match[gt_iou_argmax] = 1
     # 3. Set anchors with high overlap as positive.
     rpn_match[anchor_iou_max >= 0.7] = 1
@@ -1688,7 +1832,6 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
     image_index = -1
     image_ids = np.copy(dataset.image_ids)
     error_count = 0
-    no_augmentation_sources = no_augmentation_sources or []
 
     # Anchors
     # [anchor_count, (y1, x1, y2, x2)]
@@ -2030,18 +2173,39 @@ class MaskRCNN():
                 [target_class_ids, mrcnn_class_logits, active_class_ids])
             bbox_loss = KL.Lambda(lambda x: mrcnn_bbox_loss_graph(*x), name="mrcnn_bbox_loss")(
                 [target_bbox, target_class_ids, mrcnn_bbox])
-            mask_loss = KL.Lambda(lambda x: mrcnn_mask_loss_graph(*x), name="mrcnn_mask_loss")(
+            mask_loss, y_true, y_pred = KL.Lambda(lambda x: mrcnn_mask_loss_graph(*x), name="mrcnn_mask_loss")(
                 [target_mask, target_class_ids, mrcnn_mask])
+
+            # Name the layer
+            mask_loss = KL.Lambda(lambda x: x, name="mrcnn_mask_loss")(mask_loss)
+
+            # list of outputs
+            outputs = [rpn_class_logits, rpn_class, rpn_bbox,
+                       mrcnn_class_logits, mrcnn_class, mrcnn_bbox, mrcnn_mask,
+                       rpn_rois, output_rois,
+                       rpn_class_loss, rpn_bbox_loss, class_loss, bbox_loss, mask_loss]
+
+            if len(config.EDGE_LOSS_FILTERS) > 0:
+                # calculat ethe edge loss
+                mask_edge_loss = KL.Lambda(lambda x: mrcnn_mask_edge_loss_graph(*x,
+                                                                                config.EDGE_LOSS_FILTERS,
+                                                                                config.EDGE_LOSS_SMOOTHING_PREDICTIONS,
+                                                                                config.EDGE_LOSS_SMOOTHING_GT,
+                                                                                config.EDGE_LOSS_NORM,
+                                                                                config.EDGE_LOSS_WEIGHT_ENTROPY,
+                                                                                config.EDGE_LOSS_WEIGHT_FACTOR
+                                                                                ),
+                                           name="mrcnn_mask_edge_loss")([y_pred, y_true])
+                # add it as an output
+                outputs.append(mask_edge_loss)
+
 
             # Model
             inputs = [input_image, input_image_meta,
                       input_rpn_match, input_rpn_bbox, input_gt_class_ids, input_gt_boxes, input_gt_masks]
             if not config.USE_RPN_ROIS:
                 inputs.append(input_rois)
-            outputs = [rpn_class_logits, rpn_class, rpn_bbox,
-                       mrcnn_class_logits, mrcnn_class, mrcnn_bbox, mrcnn_mask,
-                       rpn_rois, output_rois,
-                       rpn_class_loss, rpn_bbox_loss, class_loss, bbox_loss, mask_loss]
+            
             model = KM.Model(inputs, outputs, name='mask_rcnn')
         else:
             # Network Heads
@@ -2088,6 +2252,10 @@ class MaskRCNN():
         # Get directory names. Each directory corresponds to a model
         dir_names = next(os.walk(self.model_dir))[1]
         key = self.config.NAME.lower()
+
+        if self.config.RUN_NAME:
+            key += "_" + self.config.RUN_NAME
+
         dir_names = filter(lambda f: f.startswith(key), dir_names)
         dir_names = sorted(dir_names)
         if not dir_names:
@@ -2096,7 +2264,7 @@ class MaskRCNN():
                 errno.ENOENT,
                 "Could not find model directory under {}".format(self.model_dir))
         # Pick last directory
-        dir_name = os.path.join(self.model_dir, dir_names[-1])
+        dir_name = os.path.join(self.model_dir, dir_names[-2])
         # Find the last checkpoint
         checkpoints = next(os.walk(dir_name))[2]
         checkpoints = filter(lambda f: f.startswith("mask_rcnn"), checkpoints)
@@ -2149,6 +2317,12 @@ class MaskRCNN():
         if hasattr(f, 'close'):
             f.close()
 
+        try:
+            os.rmdir(self.log_dir)
+        except:
+            # folder has not been empty
+            pass
+
         # Update the log directory
         self.set_log_dir(filepath)
 
@@ -2189,6 +2363,10 @@ class MaskRCNN():
         loss_names = [
             "rpn_class_loss",  "rpn_bbox_loss",
             "mrcnn_class_loss", "mrcnn_bbox_loss", "mrcnn_mask_loss"]
+        
+        if len(self.config.EDGE_LOSS_FILTERS) > 0:
+            loss_names.append("mrcnn_mask_edge_loss")
+
         for name in loss_names:
             layer = self.keras_model.get_layer(name)
             if layer.output in self.keras_model.losses:
@@ -2291,6 +2469,15 @@ class MaskRCNN():
         self.log_dir = os.path.join(self.model_dir, "{}{:%Y%m%dT%H%M}".format(
             self.config.NAME.lower(), now))
 
+        if self.config.RUN_NAME:
+            # Directory for training logs
+            self.log_dir = os.path.join(self.model_dir, "{}_{}_{:%Y%m%dT%H%M}".format(
+                self.config.NAME.lower(), self.config.RUN_NAME, now))
+
+        # Create log_dir if not exists
+        if not os.path.exists(self.log_dir):
+            os.makedirs(self.log_dir)
+
         # Path to save after each epoch. Include placeholders that get filled by Keras.
         self.checkpoint_path = os.path.join(self.log_dir, "mask_rcnn_{}_*epoch*.h5".format(
             self.config.NAME.lower()))
@@ -2350,21 +2537,18 @@ class MaskRCNN():
         # Data generators
         train_generator = data_generator(train_dataset, self.config, shuffle=True,
                                          augmentation=augmentation,
-                                         batch_size=self.config.BATCH_SIZE,
-                                         no_augmentation_sources=no_augmentation_sources)
+                                         batch_size=self.config.BATCH_SIZE)
         val_generator = data_generator(val_dataset, self.config, shuffle=True,
                                        batch_size=self.config.BATCH_SIZE)
-
-        # Create log_dir if it does not exist
-        if not os.path.exists(self.log_dir):
-            os.makedirs(self.log_dir)
+        
+        save_period = 5
 
         # Callbacks
         callbacks = [
             keras.callbacks.TensorBoard(log_dir=self.log_dir,
                                         histogram_freq=0, write_graph=True, write_images=False),
             keras.callbacks.ModelCheckpoint(self.checkpoint_path,
-                                            verbose=0, save_weights_only=True),
+                                            verbose=0, save_weights_only=True, period=save_period),
         ]
 
         # Add custom callbacks to the list
