@@ -327,7 +327,7 @@ class ProposalLayer(KE.Layer):
             return proposals
         proposals = utils.batch_slice([boxes, scores], nms,
                                       self.config.IMAGES_PER_GPU)
-        return proposals
+        return K.reshape(proposals, (-1, self.proposal_count, 4))
 
     def compute_output_shape(self, input_shape):
         return (None, self.proposal_count, 4)
