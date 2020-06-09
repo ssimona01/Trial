@@ -1018,6 +1018,80 @@ def build_fpn_mask_graph(rois, feature_maps, image_meta,
     return x
 
 
+def build_fpn_mask_scoring_graph(rois, feature_maps, image_meta,
+                         pool_size, predicted_mask, num_classes, train_bn=True, mask_shape=(28,28)):
+    """Builds the computation graph of the mask head of Feature Pyramid Network.
+
+    rois: [batch, num_rois, (y1, x1, y2, x2)] Proposal boxes in normalized
+          coordinates.
+    feature_maps: List of feature maps from different layers of the pyramid,
+                  [P2, P3, P4, P5]. Each has a different resolution.
+    image_meta: [batch, (meta data)] Image details. See compose_image_meta()
+    pool_size: The width of the square feature map generated from ROI Pooling.
+    num_classes: number of classes, which determines the depth of the results
+    train_bn: Boolean. Train or freeze Batch Norm layers
+
+    Returns: Masks [batch, num_rois, MASK_POOL_SIZE, MASK_POOL_SIZE, NUM_CLASSES]
+    """
+    # ROI Pooling
+    # Shape: [batch, num_rois, MASK_POOL_SIZE, MASK_POOL_SIZE, channels]
+    ROIAlign_feature = PyramidROIAlign([pool_size, pool_size],
+                        name="roi_align_mask_scoring")([rois, image_meta] + feature_maps)
+    ds_predicted_mask = predicted_mask
+    for i in range(mask_shape[0] / 28):
+    	ds_predicted_mask = KL.MaxPooling2D(pool_size=(2, 2), strides=2, name="upsample_predicted_mask_{0}".format(i+1))(ds_predicted_mask)
+
+    x = tf.stack([ROIAlign_feature, ds_predicted_mask])
+
+    # Conv layers
+    x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
+                           name="mrcnn_mask_scoring_conv1")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_mask_scoring_bn1')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+    x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
+                           name="mrcnn_mask_scoring_conv2")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_mask_scoring_bn2')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+    x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
+                           name="mrcnn_mask_scoring_conv3")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_mask_scoring_bn3')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+    x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
+                           name="mrcnn_mask_scoring_conv4")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_mask_scoring_bn4')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+
+    # Two 1024 FC layers (implemented with Conv2D for consistency)
+    x = KL.TimeDistributed(KL.Conv2D(1024, (pool_size, pool_size), padding="valid"),
+                           name="mrcnn_scoring_class_conv1")(x)
+    x = KL.TimeDistributed(BatchNorm(), name='mrcnn_scoring_class_bn1')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+    x = KL.TimeDistributed(KL.Conv2D(1024, (1, 1)),
+                           name="mrcnn_scoring_class_conv2")(x)
+    x = KL.TimeDistributed(BatchNorm(), name='mrcnn_scoring_class_bn2')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+    x = KL.Lambda(lambda x: K.squeeze(K.squeeze(x, 3), 2),
+                       name="scoring_pool_squeeze")(x)
+
+    # Classifier head
+    mrcnn_class_logits = KL.TimeDistributed(KL.Dense(num_classes),
+                                            name='mrcnn_scoring_class_logits')(x)
+    mrcnn_probs = KL.TimeDistributed(KL.Activation("softmax"),
+                                     name="mrcnn_scoring_class")(mrcnn_class_logits)
+
+    return mrcnn_class_logits, mrcnn_probs
+
+    
+
 ############################################################
 #  Loss Functions
 ############################################################
@@ -2013,6 +2087,14 @@ class MaskRCNN():
             mrcnn_mask = build_fpn_mask_graph(rois, mrcnn_feature_maps,
                                               input_image_meta,
                                               config.MASK_POOL_SIZE,
+                                              config.NUM_CLASSES,
+                                              train_bn=config.TRAIN_BN,
+                                              mask_shape=config.MASK_SHAPE)
+
+            mrcnn_scoring_class_logits, mrcnn_scoring_class = build_fpn_mask_scoring_graph(rois, mrcnn_feature_maps,
+                                              input_image_meta,
+                                              config.MASK_POOL_SIZE,
+                                              mrcnn_mask,
                                               config.NUM_CLASSES,
                                               train_bn=config.TRAIN_BN,
                                               mask_shape=config.MASK_SHAPE)
