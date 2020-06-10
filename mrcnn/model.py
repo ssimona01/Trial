@@ -1922,7 +1922,7 @@ class MaskRCNN():
         P4 = KL.Add(name="fpn_p4add")([
             KL.UpSampling2D(size=(2, 2), name="fpn_p5upsampled")(P5),
             KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c4p4')(C4)])
-        final_P4 = tf.stack([P4, sc5_P4], 0)
+        final_P4 = tf.concat([P4, sc5_P4], axis = 0, name='fpn_stack4')
         final_P4 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_p4_finalp4')(final_P4)
         sc4_P3 = KL.UpSampling2D(size=(2, 2), name="sc_p4upsampled_2")(C4)
         sc4_P2 = KL.UpSampling2D(size=(4, 4), name="sc_p4upsampled_4")(C4)
@@ -1930,14 +1930,14 @@ class MaskRCNN():
         P3 = KL.Add(name="fpn_p3add")([
             KL.UpSampling2D(size=(2, 2), name="fpn_p4upsampled")(P4),
             KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c3p3')(C3)])
-        final_P3 = tf.stack([P3, sc5_P3, sc4_P3], 0)
+        final_P3 = tf.concat([P3, sc5_P3, sc4_P3], axis = 0, name='fpn_stack3')
         final_P3 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_p3_finalp3')(final_P3)
         sc3_P2 = KL.UpSampling2D(size=(2, 2), name="sc_p3upsampled_2")(C3)
 
         P2 = KL.Add(name="fpn_p2add")([
             KL.UpSampling2D(size=(2, 2), name="fpn_p3upsampled")(P3),
             KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c2p2')(C2)])
-        final_P2 = tf.stack([P2, sc5_P2, sc4_P2, sc3_P2], 0)
+        final_P2 = tf.concat([P2, sc5_P2, sc4_P2, sc3_P2], axis = 0, name='fpn_stack2')
         final_P2 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_p2_finalp2')(final_P2)
 
         # Attach 3x3 conv to all P layers to get the final feature maps.
