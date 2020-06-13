@@ -1914,50 +1914,35 @@ class MaskRCNN():
                                              stage5=True, train_bn=config.TRAIN_BN)
         # Top-down Layers
         # TODO: add assert to varify feature map sizes match what's in config
-        print(C5.get_shape().as_list()) #2048
-        print(C4.get_shape().as_list()) #1024
-        print(C3.get_shape().as_list()) #512
-        print(C2.get_shape().as_list()) #256
 
         P5 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c5p5')(C5)
-        sc5_P4 = KL.UpSampling2D(size=(2, 2), name="sc_p5upsampled_2")(P5)
-        sc5_P3 = KL.UpSampling2D(size=(4, 4), name="sc_p5upsampled_4")(P5)
-        sc5_P2 = KL.UpSampling2D(size=(8, 8), name="sc_p5upsampled_8")(P5)
-        print(sc5_P4.get_shape().as_list())
-        print(sc5_P3.get_shape().as_list())
-        print(sc5_P2.get_shape().as_list())
+        sc5_P4 = KL.UpSampling2D(size=(2, 2), interpolation='bilinear', name="sc_p5upsampled_2")(P5)
+        sc5_P3 = KL.UpSampling2D(size=(4, 4), interpolation='bilinear', name="sc_p5upsampled_4")(P5)
+        sc5_P2 = KL.UpSampling2D(size=(8, 8), interpolation='bilinear', name="sc_p5upsampled_8")(P5)
+
         
         P4_0 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c4p4')(C4)
         P4 = KL.Add(name="fpn_p4add")([
             KL.UpSampling2D(size=(2, 2), name="fpn_p5upsampled")(P5),
             P4_0])
         final_P4 = KL.concatenate([P4, sc5_P4], name='fpn_stack4')
-        print(final_P4.get_shape().as_list())
         final_P4 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_p4_finalp4')(final_P4)
-        print(final_P4.get_shape().as_list())
-        sc4_P3 = KL.UpSampling2D(size=(2, 2), name="sc_p4upsampled_2")(P4_0)
-        print(sc4_P3.get_shape().as_list())
-        sc4_P2 = KL.UpSampling2D(size=(4, 4), name="sc_p4upsampled_4")(P4_0)
-        print(sc4_P2.get_shape().as_list())
+        sc4_P3 = KL.UpSampling2D(size=(2, 2), interpolation='bilinear', name="sc_p4upsampled_2")(P4_0)
+        sc4_P2 = KL.UpSampling2D(size=(4, 4), interpolation='bilinear', name="sc_p4upsampled_4")(P4_0)
 
         P3_0 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c3p3')(C3)
         P3 = KL.Add(name="fpn_p3add")([
             KL.UpSampling2D(size=(2, 2), name="fpn_p4upsampled")(P4),
             P3_0])
         final_P3 = KL.concatenate([P3, sc5_P3, sc4_P3], name='fpn_stack3')
-        print(final_P3.get_shape().as_list())
         final_P3 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_p3_finalp3')(final_P3)
-        print(final_P3.get_shape().as_list())
-        sc3_P2 = KL.UpSampling2D(size=(2, 2), name="sc_p3upsampled_2")(P3_0)
-        print(sc3_P2.get_shape().as_list())
+        sc3_P2 = KL.UpSampling2D(size=(2, 2), interpolation='bilinear', name="sc_p3upsampled_2")(P3_0)
 
         P2 = KL.Add(name="fpn_p2add")([
             KL.UpSampling2D(size=(2, 2), name="fpn_p3upsampled")(P3),
             KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c2p2')(C2)])
         final_P2 = KL.concatenate([P2, sc5_P2, sc4_P2, sc3_P2], name='fpn_stack2')
-        print(final_P2.get_shape().as_list())
         final_P2 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_p2_finalp2')(final_P2)
-        print(final_P2.get_shape().as_list())
 
         # Attach 3x3 conv to all P layers to get the final feature maps.
         P2 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p2")(final_P2)
@@ -1996,7 +1981,6 @@ class MaskRCNN():
         # e.g. [[a1, b1, c1], [a2, b2, c2]] => [[a1, a2], [b1, b2], [c1, c2]]
         output_names = ["rpn_class_logits", "rpn_class", "rpn_bbox"]
         outputs = list(zip(*layer_outputs))
-        print(outputs)
         outputs = [KL.Concatenate(axis=1, name=n)(list(o))
                    for o, n in zip(outputs, output_names)]
 
