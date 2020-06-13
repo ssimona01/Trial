@@ -1931,7 +1931,7 @@ class MaskRCNN():
         P4 = KL.Add(name="fpn_p4add")([
             KL.UpSampling2D(size=(2, 2), name="fpn_p5upsampled")(P5),
             P4_0])
-        final_P4 = KL.concatenate([P4, sc5_P4], axis = 0, name='fpn_stack4')
+        final_P4 = KL.concatenate([P4, sc5_P4], axis = 1, name='fpn_stack4')
         print(final_P4.get_shape().as_list())
         final_P4 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_p4_finalp4')(final_P4)
         print(final_P4.get_shape().as_list())
@@ -1944,7 +1944,7 @@ class MaskRCNN():
         P3 = KL.Add(name="fpn_p3add")([
             KL.UpSampling2D(size=(2, 2), name="fpn_p4upsampled")(P4),
             P3_0])
-        final_P3 = KL.concatenate([P3, sc5_P3, sc4_P3], axis = 0, name='fpn_stack3')
+        final_P3 = KL.concatenate([P3, sc5_P3, sc4_P3], axis = 1, name='fpn_stack3')
         print(final_P3.get_shape().as_list())
         final_P3 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_p3_finalp3')(final_P3)
         print(final_P3.get_shape().as_list())
@@ -1954,7 +1954,7 @@ class MaskRCNN():
         P2 = KL.Add(name="fpn_p2add")([
             KL.UpSampling2D(size=(2, 2), name="fpn_p3upsampled")(P3),
             KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c2p2')(C2)])
-        final_P2 = KL.concatenate([P2, sc5_P2, sc4_P2, sc3_P2], axis = 0, name='fpn_stack2')
+        final_P2 = KL.concatenate([P2, sc5_P2, sc4_P2, sc3_P2], axis = 1, name='fpn_stack2')
         print(final_P2.get_shape().as_list())
         final_P2 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_p2_finalp2')(final_P2)
         print(final_P2.get_shape().as_list())
@@ -1996,6 +1996,7 @@ class MaskRCNN():
         # e.g. [[a1, b1, c1], [a2, b2, c2]] => [[a1, a2], [b1, b2], [c1, c2]]
         output_names = ["rpn_class_logits", "rpn_class", "rpn_bbox"]
         outputs = list(zip(*layer_outputs))
+        print(outputs)
         outputs = [KL.Concatenate(axis=1, name=n)(list(o))
                    for o, n in zip(outputs, output_names)]
 
