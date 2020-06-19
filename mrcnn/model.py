@@ -1037,11 +1037,10 @@ def build_fpn_mask_scoring_graph(rois, feature_maps, image_meta,
     # Shape: [batch, num_rois, MASK_POOL_SIZE, MASK_POOL_SIZE, channels]
     ROIAlign_feature = PyramidROIAlign([pool_size, pool_size],
                         name="roi_align_mask_scoring")([rois, image_meta] + feature_maps)
-    ds_predicted_mask = predicted_mask
-    for i in range(mask_shape[0] / 28):
-    	ds_predicted_mask = KL.MaxPooling2D(pool_size=(2, 2), strides=2, name="upsample_predicted_mask_{0}".format(i+1))(ds_predicted_mask)
+    size_of_pool = mask_shape[0]/14
+    ds_predicted_mask = KL.MaxPooling2D(pool_size=(size_of_pool, size_of_pool), name="upsample_predicted_mask")(predicted_mask)
 
-    x = tf.stack([ROIAlign_feature, ds_predicted_mask])
+    x = KL.concatenate([ROIAlign_feature, ds_predicted_mask], name='roi_mask_concat')
 
     # Conv layers
     x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
